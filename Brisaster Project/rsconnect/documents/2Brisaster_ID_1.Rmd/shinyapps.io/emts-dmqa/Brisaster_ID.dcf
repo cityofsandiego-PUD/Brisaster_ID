@@ -1,0 +1,13 @@
+name: Brisaster_ID
+title: Brisaster_ID
+username: emts-dmqa
+account: emts-dmqa
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 10852583
+bundleId:
+url: https://emts-dmqa.shinyapps.io/Brisaster_ID/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
+additionalFiles: data/Brisaster_lit_data.csv

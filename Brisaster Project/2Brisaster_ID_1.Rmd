@@ -1,0 +1,308 @@
+---
+title: "Brisaster ID"
+output: html_document
+runtime: shiny
+resource_files:
+- data/Brisaster_lit_data.csv
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries, echo=FALSE, warning = FALSE, message = FALSE}
+
+library(shiny)
+library(plotly)
+library(tidyverse)
+library(RColorBrewer)
+library(DT)
+```
+
+
+```{r app, echo=FALSE}
+ui = fluidPage(
+   tags$head(
+    tags$style(HTML("
+    .form-group {
+      margin-bottom:0px;
+    }
+    .selectize-control {
+      margin-bottom: 0px 
+    }
+    .MathJax_Display {
+      margin: 0 !important;
+    }")),
+    tags$style("#species,#curr_ratio{color: mediumseagreen;
+                         font-size: 15px;
+                         font-weight: bold;
+                         }"
+                         ),
+    tags$style("#blat_range,#blat_count{color: darkturquoise;
+                         font-size: 15px;
+                         font-weight: bold;
+                         }"
+                         ),
+    tags$style("#btown_range,#btown_count{color: darkorange;
+                         font-size: 15px;
+                         font-weight: bold;
+                         }"
+                         )
+  ),
+  fluidRow(column(inputPanel(
+    textInput("indiv_id", "Sample ID", width = '80%'),
+    textInput("station", "Station", width = '80%'),
+    numericInput("sample_depth", "Depth (m)", value = 0, width = '80%'),
+    numericInput("pet_width", "Petalloid Width (mm)", value = 5,
+             min = 0, max = 20, step = 0.1, width = '80%'),
+    numericInput("test_length", "Test Length (mm)", value = 40,
+             min = 10, max = 150, step = 1, width = '80%'),
+    selectInput("species_choose", "Choose Species",
+                choices = c("Auto", 
+                            "Brisaster latifrons", 
+                            "Brisaster townsendi", 
+                            "Unknown"),
+                selected = "Auto", width = '80%'),
+    conditionalPanel(condition = "input.species_choose.includes('Auto')",
+                     uiOutput("species", width = '80%')),
+    textAreaInput("notes", "Notes:", width = '80%'), br(),
+    actionButton("save", "Save Input",
+                 style="color: #fff; background-color: mediumvioletred; border-color: darkred")), 
+    width = 3, height = '300px'),
+  column(plotlyOutput("histoPlot", height = "150px"),
+         fluidRow(column(uiOutput("blat_range"),
+                         uiOutput("curr_ratio"), width = 5),
+                  column(uiOutput("btown_range"), width = 6)),
+        plotlyOutput("scatterPlot"), width = 9)),
+  tabsetPanel(id = "tables",
+          tabPanel("New Data", DTOutput('new')),
+          tabPanel("Lit", DTOutput('lit'))
+  ),
+  fluidRow(column(uiOutput("blat_count"), width = 6),
+           column(uiOutput("btown_count"), width = 6))
+  #downloadButton("report_button", "Generate report")
+)
+
+server = function(input, output, session) {
+  
+  
+  refresh_all <- function(){
+    filenames <- paste0("data/", list.files(path = paste0(getwd(), "/data"),
+                                 pattern = "\\.csv$", recursive = TRUE))
+    framenames <- gsub("_$", "", gsub("^.*/|data|/|\\.csv", "", filenames))
+    
+    all <- NULL
+    
+    for (i in 1:length(filenames)) {
+      out <- read.csv(filenames[i], fileEncoding = "UTF-8-BOM") %>%
+        mutate(source = gsub("Brisaster|brisaster|_", "", framenames[i])) %>%
+        mutate(identifier = paste(species_id, source))
+      
+      all <- rbind(all, out)
+    }
+    
+    return(all)
+  }
+
+  react <- reactiveValues()
+  react$all <- NULL
+  
+  model <- function(data) {
+    fit <- lm(data$petalloid_width ~ data$test_length)
+    predict <- predict(fit, interval = 'prediction')
+    
+    out <- cbind(data, predict) %>%
+      mutate(identifier = gsub("Brisaster", "B.", identifier))
+    return(out)
+  }
+  
+  observeEvent(input$save, {
+    newline <- c("sample_id" = input$indiv_id,
+                 "station" = input$station,
+                 "depth" = input$sample_depth,
+                 "petalloid_width" = input$pet_width,
+                 "test_length" = input$test_length,
+                 "species_id" = ifelse(input$species_choose == "Auto", 
+                                       react$species, input$species_choose),
+                 "source" = paste0(Sys.Date(),"_new"),
+                 "identifier" = paste0(Sys.Date(),"_new"),
+                 "notes" = input$notes)
+    
+    dir <- (paste0("data/", Sys.Date()))
+    if(!dir.exists(dir)){
+      dir.create(dir)
+      write.table(t(newline), paste0(dir, "/newdata_", Sys.Date(), ".csv"),
+                row.names = FALSE, sep=",")
+    }else{write.table(t(newline), paste0(dir, "/newdata_", Sys.Date(), ".csv"),
+              append = TRUE, col.names = FALSE, row.names = FALSE, sep=",")}
+    
+    react$all <- refresh_all()
+  })
+  
+  observe({
+  react$all <- refresh_all()
+  
+  split_all <- split(react$all, react$all$identifier)
+  
+  fitted <- bind_rows(lapply(split_all, model))
+
+  
+  scatterPlot <- reactive({
+    orig <- c("B. latifrons lit", "B. townsendi lit")
+    nl <- unique(fitted$identifier)[!unique(fitted$identifier) %in% orig]
+    # extra_clrs <- brewer.pal(n = ifelse(length(non_orig)>3,length(non_orig),3),
+    #                          name = "Pastel1")[1:length(non_orig)]
+    extra_clrs <- ifelse(grepl(Sys.Date(), nl) & grepl('town', nl), "orangered",
+                         ifelse(grepl(Sys.Date(), nl) & grepl('lat', nl), "darkcyan", 
+                                ifelse(grepl(Sys.Date(), nl), "mediumspringgreen",
+                                       ifelse(grepl('town', nl), "tomato",
+                                              ifelse(grepl('lat', nl, 'turquoise', 'lightgreen' ))))))
+    
+    names(extra_clrs) <- nl
+    clrs <- c(list("B. latifrons lit" = "cadetblue1",
+                 "B. townsendi lit" = "orange"),
+                 extra_clrs)
+    
+    p <- ggplot(data = fitted, aes(x = test_length, y = petalloid_width, 
+                                color = identifier, fill = identifier)) +
+      geom_point(size = 1) +
+      geom_smooth(data = filter(fitted, grepl("lit", identifier)), method = lm,
+                  se = FALSE, show.legend = FALSE) +
+      geom_ribbon(data = filter(fitted, grepl("lit", identifier)), 
+                                aes(ymin = lwr, ymax = upr),
+                                alpha = 0.2, show.legend = FALSE) +
+      scale_color_manual(values = c(clrs), name = "") +
+      scale_fill_manual(values = c(clrs), name = "") +
+      geom_point(#data = data.frame(c(input$test_length, input$pet_width)),
+                 aes(x = input$test_length, y = input$pet_width),
+                 color = 'springgreen3', fill = 'springgreen3', shape = 13,
+                 show.legend = FALSE) +
+      ylab("Petalloid Width") +
+      xlab("Test Length") +
+      theme(legend.key = element_blank(),
+            legend.title = element_blank()) +
+      theme_bw()
+    ggplotly(p)
+  })
+  
+  output$scatterPlot <- plotly::renderPlotly({
+    scatterPlot()
+  })
+  
+  })
+  
+  observe({
+  histo_data <- react$all %>%
+    filter(species_id %in% c("Brisaster latifrons", 
+                             "Brisaster townsendi")) %>%
+    mutate(ratio = petalloid_width / test_length)
+  
+  ratio_calcs <- histo_data %>%
+    group_by(species_id) %>%
+    summarize(
+      mean = mean(ratio, na.rm = TRUE),
+      max = max(ratio, na.rm = TRUE),
+      min = min(ratio, na.rm = TRUE)
+    )
+  
+    output$species <- renderText({
+      
+      react$species <- ifelse(between(react$curr_ratio, react$blat_min - 0.001, react$blat_max + 0.001),
+                        "Brisaster latifrons",
+                        ifelse(between(react$curr_ratio, react$btown_min - 0.001, react$btown_max + 0.001), 
+                        "Brisaster townsendi", "Unkown"))
+    paste("Species:", br(), react$species)
+  })
+    
+    output$blat_range <- renderText({
+      
+      react$blat_min <- round(ratio_calcs[ratio_calcs$species_id == "Brisaster latifrons","min"], 3)
+      react$blat_max <- round(ratio_calcs[ratio_calcs$species_id == "Brisaster latifrons","max"], 3)
+      
+    paste("B. latifrons range:", react$blat_min, "-", react$blat_max)
+  })
+    
+    output$btown_range <- renderText({
+      
+      react$btown_min <- round(ratio_calcs[ratio_calcs$species_id == "Brisaster townsendi","min"], 3)
+      react$btown_max <- round(ratio_calcs[ratio_calcs$species_id == "Brisaster townsendi","max"], 3)
+      
+    paste("B. townsendi range:", react$btown_min, "-", react$btown_max)
+  })
+    
+    output$curr_ratio <- renderText({
+      
+      react$curr_ratio <- round(input$pet_width/input$test_length, 3)
+      
+    paste("Current Ratio:", react$curr_ratio)
+  })
+    
+  
+  histoPlot <- reactive({
+    p <- ggplot(data = histo_data, aes(y = ..density..)) +
+      geom_histogram(aes(x = ratio, color = species_id, fill = species_id),
+        alpha = 0.3, binwidth = 0.002) +
+      geom_density(aes(x = ratio, color = species_id, fill = species_id),
+                 alpha = 0.3) +
+      scale_color_manual(values = c("cadetblue1", "orange"), name = "") +
+      scale_fill_manual(values = c("cadetblue1", "orange"), name = "") +
+      geom_vline(
+        xintercept = input$pet_width / input$test_length,
+        linetype = "dashed",
+        color = "springgreen3"
+      ) +
+      ylab("Density (%)") +
+      theme_bw()
+    
+    ggplotly(p)
+  })
+  
+  output$histoPlot <- plotly::renderPlotly({
+    histoPlot()
+  })
+  
+  })
+  
+  
+  output$new = renderDT(datatable(filter(react$all, !grepl("lit", identifier)),
+                                  rownames = FALSE),
+                        options = list(lengthChange = FALSE))
+  
+  output$lit = renderDT(datatable(filter(react$all, grepl("lit", identifier)),
+                                  rownames = FALSE),
+                        options = list(lengthChange = FALSE))
+  
+  
+  output$blat_count <- renderText({
+      
+      react$blat_count <- nrow(filter(react$all, grepl(Sys.Date(), identifier) & species_id == "Brisaster latifrons"))
+      
+    paste("B. latifrons total today:", react$blat_count)
+  })    
+    
+  output$btown_count <- renderText({
+      
+      react$btown_count <- nrow(filter(react$all, grepl(Sys.Date(), identifier) & species_id == "Brisaster townsendi"))
+      
+    paste("B. townsendi total today:", react$btown_count)
+  })    
+    
+  
+  # output$report_button <- downloadHandler(
+  #   filename = "report.html",
+  #   content = function(file) {
+  #     tempReport <- tempfile(fileext = ".Rmd") # make sure to avoid conflicts with other shiny sessions if more params are used
+  #     file.copy("report.Rmd", tempReport, overwrite = TRUE)
+  #     rmarkdown::render(tempReport, output_format = "html_document", output_file = file, output_options = list(self_contained = TRUE),
+  #                       params = list(plotly_object = irisPlot())
+  #     )
+  #   }
+  # )
+}
+#renderPlot(plot_scatter(all))
+# plot_histo(all)
+
+shinyApp(ui, server,      
+options = list(height = 2500, width = 1000))
+```
